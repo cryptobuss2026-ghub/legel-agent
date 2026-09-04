@@ -87,15 +87,23 @@ def _call_analyze_pipeline(uploaded_file, client_role: str) -> dict:
 
 with st.sidebar:
     st.header("⚙️ Settings & Credentials")
-
-    # API Key Input Box
+    
+    # Force a unique widget key and force the display value to empty string unless typed
     api_key_input = st.text_input(
         "API Key (OpenAI / LLM Provider)",
-        value=st.session_state.api_key,
+        value="",
         type="password",
+        key="client_entered_api_key",
+        placeholder="sk-...",
         help="Enter your OpenAI API key to run analysis.",
     )
+    
+    # Store the entered key (or fallback to empty)
     st.session_state.api_key = api_key_input
+    
+    # Inject into environment immediately if provided
+    if api_key_input:
+        os.environ["OPENAI_API_KEY"] = api_key_input
 
     st.markdown("---")
 
