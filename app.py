@@ -1,22 +1,12 @@
-"""
-app.py
-Streamlit dashboard for the Legal Case Analysis & Court Speech Generation System.
-
-Run the FastAPI backend first:
-    uvicorn main:app --reload --port 8000
-
-Then run this app:
-    streamlit run app.py
-"""
 import os
-import requests
 import streamlit as st
 from dotenv import load_dotenv
 
-load_dotenv()
+# 1. Import your actual backend execution functions directly from your files
+# Adjust these imports to match the exact function names inside main.py or state_graph.py
+from main import run_analysis_pipeline, generate_download_file 
 
-# Configurable API Base URL
-DEFAULT_API_BASE_URL = os.environ.get("LEGAL_API_BASE_URL", "http://localhost:8000")
+load_dotenv()
 
 st.set_page_config(
     page_title="Legal Case Analysis & Court Speech Generator",
@@ -43,49 +33,20 @@ def _reset_state() -> None:
     st.session_state.file_id = None
 
 
-def _get_headers() -> dict:
-    """Construct request headers containing authentication data."""
-    headers = {}
+def _call_analyze_endpoint(uploaded_file, client_role: str) -> dict:
+    """Run analysis directly in Python using the user's input API key."""
+    # Set the user's API key into the environment for this request execution
     if st.session_state.api_key:
-        headers["X-API-Key"] = st.session_state.api_key
-        headers["Authorization"] = f"Bearer {st.session_state.api_key}"
-    return headers
+        os.environ["OPENAI_API_KEY"] = st.session_state.api_key
 
-
-def _call_analyze_endpoint(api_url: str, uploaded_file, client_role: str) -> dict:
-    """Post document to backend pipeline."""
-    files = {
-        "file": (
-            uploaded_file.name,
-            uploaded_file.getvalue(),
-            uploaded_file.type or "application/octet-stream",
-        )
-    }
-    data = {"client_role": client_role}
-    headers = _get_headers()
-
-    response = requests.post(
-        f"{api_url}/api/analyze",
-        files=files,
-        data=data,
-        headers=headers,
-        timeout=600,
+    # Call your agent pipeline function directly instead of using requests.post
+    file_bytes = uploaded_file.getvalue()
+    result = run_analysis_pipeline(
+        file_name=uploaded_file.name,
+        file_bytes=file_bytes,
+        client_role=client_role
     )
-    response.raise_for_status()
-    return response.json()
-
-
-@st.cache_data(show_spinner=False, ttl=300)
-def _fetch_download_bytes(api_url: str, endpoint: str, api_key: str) -> bytes:
-    """Retrieve binary export content (DOCX/JSON) with caching."""
-    headers = {}
-    if api_key:
-        headers["X-API-Key"] = api_key
-        headers["Authorization"] = f"Bearer {api_key}"
-
-    response = requests.get(f"{api_url}{endpoint}", headers=headers, timeout=120)
-    response.raise_for_status()
-    return response.content
+    return result
 
 
 # --------------------------------------------------------------------------
@@ -95,18 +56,12 @@ def _fetch_download_bytes(api_url: str, endpoint: str, api_key: str) -> bytes:
 with st.sidebar:
     st.header("⚙️ Settings & Credentials")
 
-    api_base_url_input = st.text_input(
-        "Backend API URL",
-        value=DEFAULT_API_BASE_URL,
-        help="Endpoint where your FastAPI backend is running.",
-    )
-
     # API Key Input Box
     api_key_input = st.text_input(
-        "API Key (LLM Provider / Backend)",
+        "API Key (OpenAI / LLM Provider)",
         value=st.session_state.api_key,
         type="password",
-        help="Enter your API key if required by the model backend.",
+        help="Enter your OpenAI API key to run analysis.",
     )
     st.session_state.api_key = api_key_input
 
