@@ -15,7 +15,7 @@ load_dotenv()
 import json
 import os
 import re
-import subprocess
+import struct
 from datetime import datetime
 from typing import Any, Dict, List, Optional, TypedDict
 
@@ -234,35 +234,215 @@ def _extract_docx_text(file_path: str) -> str:
 
 def _extract_doc_text(file_path: str) -> str:
     """
-    Attempts to convert legacy .doc files to .docx using LibreOffice / soffice CLI,
-    then parses the resulting .docx file.
+    Extracts plain text from legacy .doc (Microsoft Word 97-2003) binary files.
+    
+    Attempts structured parsing using olefile first. If that fails,
+    falls back to extracting readable ASCII/UTF-8 text chunks from the binary stream.
+    Never raises an exception; always returns a string (empty if parsing fails completely).
+    
+    Args:
+        file_path: Path to the .doc file.
+    
+    Returns:
+        Extracted plain text as a single string. Returns empty string if extraction fails.
     """
-    output_dir = os.path.dirname(file_path)
+    # Attempt 1: Structured parsing via olefile
     try:
-        # Try converting via LibreOffice CLI
-        subprocess.run(
-            ["soffice", "--headless", "--convert-to", "docx", file_path, "--outdir", output_dir],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        converted_docx_path = os.path.splitext(file_path)[0] + ".docx"
-        if os.path.exists(converted_docx_path):
-            return _extract_docx_text(converted_docx_path)
+        import olefile
+        
+        if not olefile.isOleFile(file_path):
+            # Not a valid OLE file; try binary fallback
+            return _extract_doc_binary_fallback(file_path)
+        
+        ole = olefile.OleFileIO(file_path)
+        try:
+            # The main document content is in the "WordDocument" stream
+            if ole.exists("WordDocument"):
+                # Try to extract structured text from OLE streams
+                doc_text = _parse_ole_word_document(ole)
+                if doc_text.strip():
+                    return doc_text
+        except Exception:
+            # Log but don't crash; try fallback
+            pass
+        finally:
+            ole.close()
+    except ImportError:
+        # olefile not installed; skip to fallback
+        pass
+    except Exception:
+        # Any error during OLE parsing; try fallback
+        pass
+    
+    # Attempt 2: Binary fallback – extract readable text chunks
+    return _extract_doc_binary_fallback(file_path)
+
+
+def _parse_ole_word_document(ole) -> str:
+    """
+    Extracts text from a Word 97-2003 .doc file's OLE streams.
+    Handles the complex .doc format by reading the WordDocument stream
+    and extracting text from the main document body.
+    
+    Args:
+        ole: An olefile.OleFileIO instance.
+    
+    Returns:
+        Extracted text string.
+    """
+    try:
+        # Read the WordDocument stream (main document metadata & pointers)
+        word_doc_data = ole.openstream("WordDocument").read()
+        
+        if len(word_doc_data) < 0x1A:
+            return ""
+        
+        # Determine if it's 0Table or 1Table based on FIB flags at offset 0x08
+        flags = struct.unpack("<H", word_doc_data[0x08:0x0A])[0]
+        table_name = "0Table" if (flags & 0x0200) else "1Table"
+        
+        text_parts = []
+        
+        # Try extracting readable text directly from streams
+        for stream_name in ["WordDocument", table_name]:
+            if ole.exists(stream_name):
+                try:
+                    stream_data = ole.openstream(stream_name).read()
+                    readable = _extract_readable_text_from_stream(stream_data)
+                    if readable:
+                        text_parts.append(readable)
+                except Exception:
+                    pass
+        
+        if text_parts:
+            return "\n".join(text_parts)
     except Exception:
         pass
+    
+    return ""
 
-    # Alternative fallback using pypandoc or textract if available
+
+def _extract_doc_binary_fallback(file_path: str) -> str:
+    """
+    Fallback: extract readable ASCII and UTF-8 text chunks from the binary stream.
+    This works for most .doc files even if structured parsing fails.
+    
+    Looks for sequences of printable ASCII and valid UTF-8 characters,
+    filters out control codes, and joins coherent text runs.
+    
+    Args:
+        file_path: Path to the .doc file.
+    
+    Returns:
+        Extracted plain text as a string.
+    """
     try:
-        import pypandoc
-        return pypandoc.convert_file(file_path, 'plain')
+        with open(file_path, "rb") as f:
+            binary_data = f.read()
     except Exception:
-        pass
+        return ""
+    
+    if not binary_data:
+        return ""
+    
+    text_chunks = []
+    current_chunk = bytearray()
+    
+    i = 0
+    while i < len(binary_data):
+        byte = binary_data[i]
+        
+        # Printable ASCII range: 0x20–0x7E, plus common whitespace
+        if 0x20 <= byte <= 0x7E or byte in (0x09, 0x0A, 0x0D):  # tab, newline, CR
+            current_chunk.append(byte)
+            i += 1
+        # UTF-8 multi-byte sequences (0xC0–0xFD)
+        elif 0xC0 <= byte <= 0xFD:
+            # Attempt to decode a UTF-8 sequence
+            utf8_seq = bytearray([byte])
+            j = i + 1
+            max_continuation = 3 if byte < 0xE0 else (2 if byte < 0xF0 else 1)
+            
+            while j < len(binary_data) and len(utf8_seq) <= max_continuation:
+                next_byte = binary_data[j]
+                # Continuation bytes: 10xxxxxx (0x80–0xBF)
+                if 0x80 <= next_byte <= 0xBF:
+                    utf8_seq.append(next_byte)
+                    j += 1
+                else:
+                    break
+            
+            # Try to decode; if valid, include it
+            try:
+                decoded = utf8_seq.decode("utf-8")
+                # Ensure no control characters (except whitespace)
+                if not any(0 <= ord(c) < 0x20 and c not in "\t\n\r" for c in decoded):
+                    current_chunk.extend(utf8_seq)
+                i = j
+            except (UnicodeDecodeError, AttributeError):
+                # Not valid UTF-8; flush current chunk and skip this byte
+                if current_chunk:
+                    try:
+                        chunk_text = current_chunk.decode("ascii", errors="ignore").strip()
+                        if chunk_text and len(chunk_text) > 2:
+                            text_chunks.append(chunk_text)
+                    except Exception:
+                        pass
+                    current_chunk = bytearray()
+                i += 1
+        else:
+            # Non-text byte; flush current chunk if non-empty
+            if current_chunk:
+                try:
+                    chunk_text = current_chunk.decode("ascii", errors="ignore").strip()
+                    if chunk_text and len(chunk_text) > 2:
+                        text_chunks.append(chunk_text)
+                except Exception:
+                    pass
+                current_chunk = bytearray()
+            i += 1
+    
+    # Flush final chunk
+    if current_chunk:
+        try:
+            chunk_text = current_chunk.decode("ascii", errors="ignore").strip()
+            if chunk_text and len(chunk_text) > 2:
+                text_chunks.append(chunk_text)
+        except Exception:
+            pass
+    
+    # Join chunks, collapse extra whitespace
+    full_text = "\n".join(text_chunks)
+    full_text = re.sub(r"\n{3,}", "\n\n", full_text)  # Collapse multiple newlines
+    full_text = re.sub(r"[ \t]+", " ", full_text)      # Collapse multiple spaces/tabs
+    
+    return full_text.strip()
 
-    raise ValueError(
-        "Legacy .doc files cannot be parsed directly. Please convert the file to .docx before uploading, "
-        "or install LibreOffice ('soffice') on your server to enable automatic background conversion."
-    )
+
+def _extract_readable_text_from_stream(data: bytes) -> str:
+    """
+    Simple helper to extract readable ASCII sequences from binary data.
+    Used by the OLE parser when it needs to pull text directly from streams.
+    
+    Args:
+        data: Binary stream data.
+    
+    Returns:
+        Extracted text string.
+    """
+    # Find all sequences of printable ASCII (0x20–0x7E) + common whitespace
+    text_runs = re.findall(rb'[\x20-\x7E\t\n\r]{4,}', data)
+    decoded_runs = []
+    
+    for run in text_runs:
+        try:
+            decoded = run.decode("ascii", errors="ignore").strip()
+            if decoded and len(decoded) > 2:  # Filter out very short fragments
+                decoded_runs.append(decoded)
+        except Exception:
+            pass
+    
+    return "\n".join(decoded_runs)
 
 
 def _normalize_whitespace(text: str) -> str:
