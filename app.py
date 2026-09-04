@@ -272,6 +272,26 @@ else:
         timeline = fact_sheet.get("timeline", [])
         if timeline:
             df_timeline = pd.DataFrame(timeline)
+            
+            # Format the "disputed" column into natural language status statements
+            if "disputed" in df_timeline.columns:
+                def format_dispute_status(row):
+                    val = row.get("disputed")
+                    details = row.get("dispute_details") or row.get("details") or ""
+                    
+                    if val is True or str(val).lower() == "true":
+                        if details:
+                            return f"⚠️ <b>Disputed:</b> {details}"
+                        return "⚠️ <b>Disputed:</b> Denied or challenged by opposing party."
+                    elif val is False or str(val).lower() == "false":
+                        if details:
+                            return f"✅ <b>Accepted:</b> {details}"
+                        return "✅ <b>Accepted / Uncontested:</b> Neither party disputed this statement."
+                    return str(val)
+
+                df_timeline["disputed"] = df_timeline.apply(format_dispute_status, axis=1)
+                df_timeline.rename(columns={"disputed": "Dispute Status"}, inplace=True)
+
             st.write(
                 df_timeline.to_html(index=False, escape=False, classes="custom-table"),
                 unsafe_allow_html=True,
