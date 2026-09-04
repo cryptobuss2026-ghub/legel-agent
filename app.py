@@ -23,6 +23,39 @@ st.set_page_config(
 )
 
 # --------------------------------------------------------------------------
+# GLOBAL CSS FIXES FOR TEXT OVERFLOW, TABLES, AND METRICS
+# --------------------------------------------------------------------------
+st.markdown(
+    """
+    <style>
+    /* Prevent metric cards from truncating text with '...' */
+    div[data-testid="stMetricValue"] {
+        font-size: 1.15rem !important;
+        white-space: normal !important;
+        word-break: break-word !important;
+        overflow-wrap: break-word !important;
+    }
+    div[data-testid="stMetricLabel"] {
+        white-space: normal !important;
+        word-break: break-word !important;
+    }
+    
+    /* Ensure tables roll smoothly without overflowing containers */
+    div[data-testid="stTable"], div[data-testid="stDataFrame"] {
+        width: 100% !important;
+        overflow-x: auto !important;
+    }
+    
+    /* Global word break protection */
+    p, span, div {
+        overflow-wrap: break-word;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# --------------------------------------------------------------------------
 # SESSION STATE MANAGEMENT
 # --------------------------------------------------------------------------
 
@@ -202,14 +235,32 @@ else:
         st.markdown("### Parties Identified")
         parties = fact_sheet.get("parties", [])
         if parties:
-            st.dataframe(parties, use_container_width=True, hide_index=True)
+            st.dataframe(
+                parties,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "name": st.column_config.TextColumn("Name", width="medium"),
+                    "role": st.column_config.TextColumn("Role", width="small"),
+                    "description": st.column_config.TextColumn("Description", width="large"),
+                },
+            )
         else:
             st.write("No parties identified.")
 
         st.markdown("### Chronological Timeline")
         timeline = fact_sheet.get("timeline", [])
         if timeline:
-            st.dataframe(timeline, use_container_width=True, hide_index=True)
+            st.dataframe(
+                timeline,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "date": st.column_config.TextColumn("Date", width="small"),
+                    "event": st.column_config.TextColumn("Event", width="medium"),
+                    "source_snippet": st.column_config.TextColumn("Source Snippet", width="large"),
+                },
+            )
         else:
             st.write("No timeline events extracted.")
 
@@ -228,9 +279,13 @@ else:
 
     with tab_jurisdiction:
         st.markdown("### Jurisdictional Assessment")
-        col_a, col_b = st.columns(2)
-        col_a.metric("Court Level", jurisdiction.get("court_level", "N/A"))
-        col_b.metric("Estimated Court Fee", jurisdiction.get("estimated_court_fee", "N/A"))
+        col_a, col_b = st.columns([1, 1], gap="medium")
+        with col_a:
+            st.metric("Court Level", jurisdiction.get("court_level", "N/A"))
+        with col_b:
+            st.markdown("**Estimated Court Fee**")
+            fee_val = jurisdiction.get("estimated_court_fee", "N/A")
+            st.info(fee_val if fee_val else "N/A")
 
         st.markdown(f"**Court Type:** {jurisdiction.get('court_type', 'N/A')}")
         st.markdown("**Legal Reasoning:**")
