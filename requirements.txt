@@ -1,0 +1,12 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+langgraph==0.2.28
+langchain-openai==0.2.2
+langchain-core==0.3.9
+pymupdf==1.24.10
+python-docx==1.1.2
+streamlit==1.38.0
+pydantic==2.9.2
+python-multipart==0.0.9
+requests==2.32.3
+python-dotenv==1.0.1
