@@ -15,6 +15,7 @@ load_dotenv()
 import json
 import os
 import re
+import subprocess
 from datetime import datetime
 from typing import Any, Dict, List, Optional, TypedDict
 
@@ -168,7 +169,7 @@ class _DraftingResult(BaseModel):
 
 def DocumentParserNode(state: CaseState) -> CaseState:
     """
-    Extracts structured plain text from an uploaded PDF or DOCX file.
+    Extracts structured plain text from an uploaded PDF, DOCX, DOC, or TXT file.
     Populates state["raw_text"].
     """
     errors = state.get("errors", [])
@@ -187,6 +188,8 @@ def DocumentParserNode(state: CaseState) -> CaseState:
             extracted_text = _extract_pdf_text(file_path)
         elif extension == ".docx":
             extracted_text = _extract_docx_text(file_path)
+        elif extension == ".doc":
+            extracted_text = _extract_doc_text(file_path)
         elif extension == ".txt":
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 extracted_text = f.read()
@@ -227,6 +230,39 @@ def _extract_docx_text(file_path: str) -> str:
             if row_text:
                 parts.append(row_text)
     return "\n".join(parts)
+
+
+def _extract_doc_text(file_path: str) -> str:
+    """
+    Attempts to convert legacy .doc files to .docx using LibreOffice / soffice CLI,
+    then parses the resulting .docx file.
+    """
+    output_dir = os.path.dirname(file_path)
+    try:
+        # Try converting via LibreOffice CLI
+        subprocess.run(
+            ["soffice", "--headless", "--convert-to", "docx", file_path, "--outdir", output_dir],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        converted_docx_path = os.path.splitext(file_path)[0] + ".docx"
+        if os.path.exists(converted_docx_path):
+            return _extract_docx_text(converted_docx_path)
+    except Exception:
+        pass
+
+    # Alternative fallback using pypandoc or textract if available
+    try:
+        import pypandoc
+        return pypandoc.convert_file(file_path, 'plain')
+    except Exception:
+        pass
+
+    raise ValueError(
+        "Legacy .doc files cannot be parsed directly. Please convert the file to .docx before uploading, "
+        "or install LibreOffice ('soffice') on your server to enable automatic background conversion."
+    )
 
 
 def _normalize_whitespace(text: str) -> str:
@@ -315,8 +351,6 @@ def _sortable_date(date_str: str) -> str:
 # NODE 3: JurisdictionAndPrecedentNode
 # --------------------------------------------------------------------------
 
-# A small illustrative court-fee schedule used as a deterministic fallback
-# / sanity check alongside the LLM's own fee estimate.
 _COURT_FEE_SCHEDULE = {
     "small_claims": "1% of claim value (min. $50)",
     "district_civil": "2% of claim value (min. $150)",
