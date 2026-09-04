@@ -133,7 +133,7 @@ col_upload, col_options = st.columns([2, 1], gap="medium")
 with col_upload:
     uploaded_file = st.file_uploader(
         "Upload case document",
-        type=["pdf", "docx", "doc", "txt"],
+        type=[".pdf", ".docx", ".doc", ".txt"],
         help="Accepted formats: PDF, DOCX, DOC, TXT",
     )
 
