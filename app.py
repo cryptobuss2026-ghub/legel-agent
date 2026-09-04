@@ -1,18 +1,25 @@
+import json
 import os
+import uuid
 import streamlit as st
 from dotenv import load_dotenv
 
-# 1. Import your actual backend execution functions directly from your files
-# Adjust these imports to match the exact function names inside main.py or state_graph.py
-from main import run_analysis_pipeline, generate_download_file 
+# Direct in-memory execution imports (No FastAPI/Uvicorn HTTP server required)
+from state_graph import run_case_pipeline
+from document_builder import save_case_outputs
 
 load_dotenv()
+
+UPLOAD_DIR = os.environ.get("LEGAL_UPLOAD_DIR", "uploads")
+OUTPUT_DIR = os.environ.get("LEGAL_OUTPUT_DIR", "output")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 st.set_page_config(
     page_title="Legal Case Analysis & Court Speech Generator",
     page_icon="⚖️",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
 # --------------------------------------------------------------------------
@@ -23,6 +30,8 @@ if "analysis_result" not in st.session_state:
     st.session_state.analysis_result = None
 if "file_id" not in st.session_state:
     st.session_state.file_id = None
+if "output_paths" not in st.session_state:
+    st.session_state.output_paths = None
 if "api_key" not in st.session_state:
     st.session_state.api_key = os.environ.get("OPENAI_API_KEY", "")
 
@@ -31,22 +40,45 @@ def _reset_state() -> None:
     """Clear session analysis context."""
     st.session_state.analysis_result = None
     st.session_state.file_id = None
+    st.session_state.output_paths = None
 
 
-def _call_analyze_endpoint(uploaded_file, client_role: str) -> dict:
+def _call_analyze_pipeline(uploaded_file, client_role: str) -> dict:
     """Run analysis directly in Python using the user's input API key."""
-    # Set the user's API key into the environment for this request execution
     if st.session_state.api_key:
         os.environ["OPENAI_API_KEY"] = st.session_state.api_key
 
-    # Call your agent pipeline function directly instead of using requests.post
-    file_bytes = uploaded_file.getvalue()
-    result = run_analysis_pipeline(
+    file_id = uuid.uuid4().hex
+    extension = os.path.splitext(uploaded_file.name)[1].lower()
+    saved_upload_path = os.path.join(UPLOAD_DIR, f"{file_id}{extension}")
+
+    # Save uploaded file locally
+    with open(saved_upload_path, "wb") as f:
+        f.write(uploaded_file.getvalue())
+
+    # 1. Run LangGraph pipeline directly
+    final_state = run_case_pipeline(
+        file_path=saved_upload_path,
         file_name=uploaded_file.name,
-        file_bytes=file_bytes,
-        client_role=client_role
+        client_role=client_role,
+        file_id=file_id,
     )
-    return result
+
+    # 2. Generate output DOCX and JSON documents
+    output_paths = save_case_outputs(final_state)
+
+    # 3. Load generated fact sheet JSON
+    with open(output_paths["json_path"], "r", encoding="utf-8") as json_file:
+        fact_sheet = json.load(json_file)
+
+    st.session_state.output_paths = output_paths
+
+    return {
+        "file_id": file_id,
+        "status": final_state.get("status", "unknown"),
+        "errors": final_state.get("errors", []),
+        "fact_sheet": fact_sheet,
+    }
 
 
 # --------------------------------------------------------------------------
@@ -67,21 +99,6 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Backend Connection Status Check
-    try:
-        health = requests.get(
-            f"{api_base_url_input}/health",
-            headers=_get_headers(),
-            timeout=3,
-        )
-        if health.ok:
-            st.success("🟢 Backend connected")
-        else:
-            st.warning("🟡 Backend reachable, but returned unhealthy status")
-    except requests.exceptions.RequestException:
-        st.error("🔴 Backend not reachable\n\nStart it with:\n`uvicorn main:app --reload`")
-
-    st.markdown("---")
     if st.button("🔄 Start New Analysis", use_container_width=True):
         _reset_state()
         st.rerun()
@@ -119,23 +136,25 @@ with col_options:
         help="Which side of the dispute does your client represent?",
     )
 
-run_clicked = st.button("🚀 Run Analysis", type="primary", disabled=uploaded_file is None, use_container_width=True)
+run_clicked = st.button(
+    "🚀 Run Analysis",
+    type="primary",
+    disabled=uploaded_file is None,
+    use_container_width=True,
+)
 
 if run_clicked and uploaded_file is not None:
-    with st.spinner("Running LangGraph legal analysis pipeline — this may take a minute..."):
-        try:
-            result = _call_analyze_endpoint(api_base_url_input, uploaded_file, client_role)
-            st.session_state.analysis_result = result
-            st.session_state.file_id = result.get("file_id")
-            st.success("Analysis completed successfully!")
-        except requests.exceptions.HTTPError as http_err:
+    if not st.session_state.api_key:
+        st.error("Please enter your OpenAI API Key in the sidebar to proceed.")
+    else:
+        with st.spinner("Running LangGraph legal analysis pipeline — this may take a minute..."):
             try:
-                detail = http_err.response.json().get("detail", str(http_err))
-            except Exception:
-                detail = str(http_err)
-            st.error(f"Analysis failed: {detail}")
-        except requests.exceptions.RequestException as req_err:
-            st.error(f"Could not reach backend API: {req_err}")
+                result = _call_analyze_pipeline(uploaded_file, client_role)
+                st.session_state.analysis_result = result
+                st.session_state.file_id = result.get("file_id")
+                st.success("Analysis completed successfully!")
+            except Exception as exc:
+                st.error(f"Analysis failed: {exc}")
 
 st.divider()
 
@@ -244,41 +263,34 @@ else:
     st.subheader("📥 Export Case Files")
     download_col_1, download_col_2 = st.columns(2)
 
+    output_paths = st.session_state.output_paths or {}
     file_id = st.session_state.file_id
 
-    if file_id:
-        with download_col_1:
-            try:
-                docx_bytes = _fetch_download_bytes(
-                    api_base_url_input,
-                    f"/api/download/docx/{file_id}",
-                    st.session_state.api_key,
-                )
+    docx_path = output_paths.get("docx_path")
+    json_path = output_paths.get("json_path")
+
+    with download_col_1:
+        if docx_path and os.path.exists(docx_path):
+            with open(docx_path, "rb") as f:
                 st.download_button(
                     label="📄 Download Formal Legal Brief (.docx)",
-                    data=docx_bytes,
+                    data=f.read(),
                     file_name=f"legal_brief_{file_id}.docx",
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     use_container_width=True,
                 )
-            except requests.exceptions.RequestException as exc:
-                st.error(f"Could not fetch DOCX file: {exc}")
+        else:
+            st.warning("DOCX file not found.")
 
-        with download_col_2:
-            try:
-                json_bytes = _fetch_download_bytes(
-                    api_base_url_input,
-                    f"/api/download/json/{file_id}",
-                    st.session_state.api_key,
-                )
+    with download_col_2:
+        if json_path and os.path.exists(json_path):
+            with open(json_path, "rb") as f:
                 st.download_button(
                     label="🗂️ Download Fact-Sheet (.json)",
-                    data=json_bytes,
+                    data=f.read(),
                     file_name=f"fact_sheet_{file_id}.json",
                     mime="application/json",
                     use_container_width=True,
                 )
-            except requests.exceptions.RequestException as exc:
-                st.error(f"Could not fetch JSON file: {exc}")
-    else:
-        st.warning("File ID missing; cannot generate download links.")
+        else:
+            st.warning("JSON file not found.")
