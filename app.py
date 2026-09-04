@@ -1,6 +1,7 @@
 import json
 import os
 import uuid
+import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -40,10 +41,34 @@ st.markdown(
         word-break: break-word !important;
     }
     
-    /* Ensure tables roll smoothly without overflowing containers */
-    div[data-testid="stTable"], div[data-testid="stDataFrame"] {
-        width: 100% !important;
-        overflow-x: auto !important;
+    /* Clean custom HTML table styling for full text wrapping */
+    .custom-table-container {
+        width: 100%;
+        overflow-x: auto;
+        margin-bottom: 1rem;
+    }
+    .custom-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.92rem;
+        text-align: left;
+        margin-bottom: 1rem;
+    }
+    .custom-table th {
+        background-color: #1e2530;
+        color: #e0e6ed;
+        padding: 10px 12px;
+        border: 1px solid #313948;
+        font-weight: 600;
+        text-transform: capitalize;
+    }
+    .custom-table td {
+        padding: 10px 12px;
+        border: 1px solid #313948;
+        vertical-align: top;
+        word-break: break-word;
+        white-space: normal;
+        line-height: 1.5;
     }
     
     /* Global word break protection */
@@ -235,15 +260,10 @@ else:
         st.markdown("### Parties Identified")
         parties = fact_sheet.get("parties", [])
         if parties:
-            st.dataframe(
-                parties,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "name": st.column_config.TextColumn("Name", width="medium"),
-                    "role": st.column_config.TextColumn("Role", width="small"),
-                    "description": st.column_config.TextColumn("Description", width="large"),
-                },
+            df_parties = pd.DataFrame(parties)
+            st.write(
+                df_parties.to_html(index=False, escape=False, classes="custom-table"),
+                unsafe_allow_html=True,
             )
         else:
             st.write("No parties identified.")
@@ -251,15 +271,10 @@ else:
         st.markdown("### Chronological Timeline")
         timeline = fact_sheet.get("timeline", [])
         if timeline:
-            st.dataframe(
-                timeline,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "date": st.column_config.TextColumn("Date", width="small"),
-                    "event": st.column_config.TextColumn("Event", width="medium"),
-                    "source_snippet": st.column_config.TextColumn("Source Snippet", width="large"),
-                },
+            df_timeline = pd.DataFrame(timeline)
+            st.write(
+                df_timeline.to_html(index=False, escape=False, classes="custom-table"),
+                unsafe_allow_html=True,
             )
         else:
             st.write("No timeline events extracted.")
